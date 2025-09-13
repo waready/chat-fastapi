@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Chat (Vue 2 + WS)</title>
+
+  <!-- Bootstrap -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
+  <!-- Vue 2 -->
+  <script src="https://cdn.jsdelivr.net/npm/vue@2.7.16/dist/vue.js"></script>
+
+  <style>
+    body{background:#f7f7f9}
+    .container-wrap{max-width:1200px}
+    .chat-card{height:80vh}
+    .chat-log{height:calc(80vh - 120px); overflow-y:auto; background:#fff; border:1px solid #e9ecef; border-radius:.5rem}
+    .msg{padding:.35rem .6rem; border-radius:.5rem; display:inline-block; max-width:80%}
+    .msg.me{background:#e6f4ff; align-self:flex-end}
+    .msg.them{background:#f1f3f5}
+    .msg-wrap{display:flex; margin:.35rem 0}
+    .msg-meta{font-size:.75rem; color:#6c757d; margin:0 .5rem}
+    .user-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:8px}
+    .dot-online{background:#28a745}
+    .dot-offline{background:#dc3545}
+    .avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;margin-right:8px}
+    .chat-input{margin-top:.75rem}
+  </style>
+</head>
+<body>
+<div id="app" class="container container-wrap py-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0">💬 Chat</h4>
+    <div>
+      <small class="text-muted mr-3">WS: <b>{{ wsState }}</b></small>
+      <button class="btn btn-sm btn-outline-secondary" @click="openProfile">Cambiar perfil</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <!-- Chat -->
+    <div class="col-lg-8 mb-3">
+      <div class="card chat-card">
+        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+          <div><b>Sala General</b></div>
+          <div class="text-muted" style="font-size:.9rem">{{ me.name }}</div>
+        </div>
+
+        <div class="card-body p-2">
+          <!-- LOG -->
+          <div ref="log" class="chat-log p-2">
+            <div v-for="m in messages" :key="m.id" class="msg-wrap" :style="{justifyContent: m.author==='me' ? 'flex-end':'flex-start'}">
+              <div class="msg" :class="m.author">
+                <div v-if="m.author==='them'" class="msg-meta"><b>{{ m.name }}</b></div>
+                <div>{{ m.text }}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- INPUT -->
+          <div class="chat-input">
+            <div class="input-group">
+              <input v-model="input" @keyup.enter="sendMessage" type="text" class="form-control" placeholder="Escribe un mensaje...">
+              <div class="input-group-append">
+                <button class="btn btn-primary" :disabled="!canSend" @click="sendMessage">Enviar</button>
+              </div>
+            </div>
+            <small class="text-muted">Enter para enviar</small>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sidebar usuarios -->
+    <div class="col-lg-4">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span>Usuarios</span>
+          <span class="badge badge-primary">{{ onlineCount }}</span>
+        </div>
+        <ul class="list-group list-group-flush">
+          <li v-for="u in allUsersSorted" :key="u.id" class="list-group-item d-flex align-items-center">
+            <span class="user-dot" :class="u.online ? 'dot-online':'dot-offline'"></span>
+            <img :src="u.avatar" class="avatar" alt="">
+            <div>
+              <div>{{ u.name }}</div>
+              <div class="text-muted" style="font-size:.75rem">{{ u.online?'Conectado':'Desconectado' }}</div>
+            </div>
+          </li>
+          <li v-if="allUsersSorted.length===0" class="list-group-item text-muted">Sin usuarios aún</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal perfil (dentro de #app) -->
+  <div class="modal fade" id="profileModal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog" role="document"><div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title">Tu perfil</h6>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close" @click="closeProfile"><span>&times;</span></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Nombre:</label>
+          <input id="nameInput" v-model="draft.name" class="form-control" placeholder="Ej. Ana">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-light" data-dismiss="modal" @click="closeProfile">Cancelar</button>
+        <button class="btn btn-primary" @click="applyProfile">Guardar</button>
+      </div>
+    </div></div>
+  </div>
+</div>
+
+<!-- jQuery + Bootstrap JS (modal) -->
+<script src="https://code.jquery.com/jquery-3.5.1.slim.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+new Vue({
+  el:'#app',
+  data(){
+    return{
+      // Cambia si tu backend no es 127.0.0.1:8000
+      backendHost: location.hostname,
+      backendPort: 8000,
+
+      ws:null,
+      wsReady:false,
+      reconnectDelay: 1000,
+
+      messages:[],
+      input:"",
+
+      usersDict:{},  
+
+      me:{ id:'me-'+Math.random().toString(36).slice(2,8), name:'Usuario'+Math.floor(Math.random()*1000), avatar:'' },
+      draft:{ name:'', avatar:'' }
+    }
+  },
+  computed:{
+    apiBase(){ return `${location.protocol}//${this.backendHost}:${this.backendPort}` },
+    wsUrl(){ return `${location.protocol==='https:'?'wss':'ws'}://${this.backendHost}:${this.backendPort}/ws` },
+    wsState(){
+      if(!this.ws) return 'desconectado';
+      return ['conectando','abierto','cerrando','cerrado'][this.ws.readyState]||'desconocido';
+    },
+    canSend(){ return this.input.trim()!=='' && this.ws && this.ws.readyState===1; },
+    allUsersSorted(){ return Object.values(this.usersDict).sort((a,b)=>a.name.localeCompare(b.name)); },
+    onlineCount(){ return Object.values(this.usersDict).filter(u=>u.online).length; }
+  },
+  mounted(){
+    // mostrar modal al montar
+    this.$nextTick(()=>{
+      this.openProfile();
+      setTimeout(()=>document.getElementById('nameInput')?.focus(),150);
+    });
+    // cargar historial SOLO mensajes (no sistema)
+    this.loadHistory();
+  },
+  methods:{
+    // perfil / modal
+    openProfile(){
+      this.draft.name = this.me.name;
+      this.draft.avatar = this.me.avatar || '';
+      $('#profileModal').modal({backdrop:'static',keyboard:false,show:true});
+    },
+    closeProfile(){ $('#profileModal').modal('hide'); },
+    applyProfile(){
+      const n=(this.draft.name||'').trim();
+      if(!n) return;
+      this.me.name = n;
+      this.me.avatar = (this.draft.avatar||'').trim() || this.makeAvatar(n);
+      this.closeProfile();
+
+      if(!this.ws || this.ws.readyState!==1) this.connectWS();
+      this.ensureUser(this.me.name, this.me.avatar, true);
+    },
+
+    // historial (REST)
+    async loadHistory(){
+      try{
+        const r = await fetch(this.apiBase + '/messages?only_user=true');
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        const data = await r.json();
+        const items = Array.isArray(data) ? data : (data.items||[]);
+        items.forEach(m=>this.consumeIncomingText(m.text,{fromHistory:true}));
+      }catch(e){ console.warn('No se pudo cargar /messages:', e); }
+    },
+
+    // WebSocket
+    connectWS(){
+      if(this.ws && this.ws.readyState===1) return;
+      this.ws = new WebSocket(this.wsUrl);
+
+      this.ws.onopen = ()=>{
+        this.wsReady = true;
+        this.reconnectDelay = 1000;
+        // el backend espera el nombre como PRIMER mensaje
+        this.ws.send(this.me.name);
+        this.ensureUser(this.me.name, this.me.avatar || this.makeAvatar(this.me.name), true);
+      };
+      this.ws.onmessage = ev => this.consumeIncomingText(ev.data);
+      this.ws.onclose = ()=>{
+        this.wsReady = false;
+        setTimeout(()=>this.connectWS(), this.reconnectDelay);
+        this.reconnectDelay = Math.min(this.reconnectDelay*2, 15000);
+      };
+      this.ws.onerror = ()=>{ try{ this.ws.close(); }catch(_){} };
+    },
+
+    // parseo backend
+    consumeIncomingText(text,{fromHistory=false}={}){
+      if(!text) return;
+
+      // unión -> solo presencia
+      if(text.startsWith('🟢 ')){
+        const name = text.replace('🟢 ','').replace(' se unió al chat','').trim();
+        this.ensureUser(name, undefined, true);
+        return;
+      }
+      // salida -> solo presencia
+      if(text.startsWith('🔴 ')){
+        const name = text.replace('🔴 ','').replace(' salió del chat','').trim();
+        this.ensureUser(name, undefined, false);
+        return;
+      }
+      // mensaje "[Nombre] contenido"
+      const m = text.match(/^\[([^\]]+)\]\s+(.+)$/);
+      if(m){
+        const name = m[1].trim();
+        const content = m[2];
+        this.ensureUser(name, undefined, true);
+        this.messages.push({
+          id: 'm-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),
+          author: (name===this.me.name)?'me':'them',
+          name,
+          text: content
+        });
+        this.$nextTick(this.scrollToBottom);
+      }
+    },
+
+    // enviar
+    sendMessage(){
+      const txt = this.input.trim();
+      if(!txt || !this.ws || this.ws.readyState!==1) return;
+      this.ws.send(txt);
+      this.input = '';
+    },
+
+    // usuarios (sidebar)
+    ensureUser(name, avatar, online){
+      if(!name) return;
+      if(!this.usersDict[name]){
+        this.$set(this.usersDict, name, {
+          id:'u-'+name.toLowerCase(),
+          name,
+          avatar: avatar || this.makeAvatar(name),
+          online: !!online
+        });
+      }else{
+        const u={...this.usersDict[name]};
+        if(avatar) u.avatar = avatar;
+        if(typeof online==='boolean') u.online = online;
+        this.$set(this.usersDict, name, u);
+      }
+    },
+    makeAvatar(name){ return `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(name)}`; },
+
+    // scroll
+    scrollToBottom(){
+      const el=this.$refs.log;
+      if(el) el.scrollTop = el.scrollHeight;
+    }
+  }
+});
+</script>
+</body>
+</html>
