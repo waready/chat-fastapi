@@ -122,9 +122,11 @@ new Vue({
   el:'#app',
   data(){
     return{
-      // Cambia si tu backend no es 127.0.0.1:8000
-      backendHost: location.hostname,
-      backendPort: 8000,
+      // Producción: usamos mismas rutas del sitio (sin :8000)
+      useRelative: true,
+      // (para desarrollo local puedes poner useRelative=false y usar estos)
+      devHost: '127.0.0.1',
+      devPort: 8000,
 
       ws:null,
       wsReady:false,
@@ -140,8 +142,15 @@ new Vue({
     }
   },
   computed:{
-    apiBase(){ return `${location.protocol}//${this.backendHost}:${this.backendPort}` },
-    wsUrl(){ return `${location.protocol==='https:'?'wss':'ws'}://${this.backendHost}:${this.backendPort}/ws` },
+    apiBase(){
+      if (this.useRelative) return ''; // /messages...
+      return `${location.protocol}//${this.devHost}:${this.devPort}`;
+    },
+    wsUrl(){
+      const proto = (location.protocol==='https:') ? 'wss' : 'ws';
+      if (this.useRelative) return `${proto}://${location.host}/ws`;
+      return `${proto}://${this.devHost}:${this.devPort}/ws`;
+    },
     wsState(){
       if(!this.ws) return 'desconectado';
       return ['conectando','abierto','cerrando','cerrado'][this.ws.readyState]||'desconocido';
@@ -151,11 +160,15 @@ new Vue({
     onlineCount(){ return Object.values(this.usersDict).filter(u=>u.online).length; }
   },
   mounted(){
-    // mostrar modal al montar
-    this.$nextTick(()=>{
-      this.openProfile();
-      setTimeout(()=>document.getElementById('nameInput')?.focus(),150);
+    // abrir modal
+    this.$nextTick(()=>{ this.openProfile(); });
+
+    // Enfocar input solo cuando el modal esté visible (sin aria-hidden)
+    $('#profileModal').on('shown.bs.modal', () => {
+      const el = document.getElementById('nameInput');
+      if (el) el.focus();
     });
+
     // cargar historial SOLO mensajes (no sistema)
     this.loadHistory();
   },
@@ -181,7 +194,7 @@ new Vue({
     // historial (REST)
     async loadHistory(){
       try{
-        const r = await fetch(this.apiBase + '/messages?only_user=true');
+        const r = await fetch((this.apiBase||'') + '/messages?only_user=true');
         if(!r.ok) throw new Error('HTTP '+r.status);
         const data = await r.json();
         const items = Array.isArray(data) ? data : (data.items||[]);
